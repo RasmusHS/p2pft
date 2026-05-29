@@ -39,6 +39,14 @@ func NewHashingWriter(w io.Writer) *HashingWriter {
 	return &HashingWriter{W: w, h: sha256.New()}
 }
 
+// NewHashingWriterFromHash wraps w and uses an externally-provided hash.
+// Use this when the hash must be seeded with prior bytes (e.g. when
+// resuming a partial transfer, the rolling hash needs to cover the bytes
+// already on disk before any new bytes arrive).
+func NewHashingWriterFromHash(w io.Writer, h hash.Hash) *HashingWriter {
+	return &HashingWriter{W: w, h: h}
+}
+
 func (hw *HashingWriter) Write(p []byte) (int, error) {
 	n, err := hw.W.Write(p)
 	if n > 0 {
