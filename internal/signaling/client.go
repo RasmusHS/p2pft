@@ -22,6 +22,12 @@ func Dial(ctx context.Context, url string) (*Client, error) {
 	return &Client{conn: conn}, nil
 }
 
+// FromConn wraps an already-accepted WebSocket connection.
+// Used on the relay side to share the same Send/Read helpers as the dial side.
+func FromConn(conn *websocket.Conn) *Client {
+	return &Client{conn: conn}
+}
+
 // Send marshals payload as JSON and writes an Envelope to the wire.
 func (c *Client) Send(ctx context.Context, msgType string, payload any) error {
 	raw, err := json.Marshal(payload)
