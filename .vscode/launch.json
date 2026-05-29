@@ -10,7 +10,12 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/cmd/p2pft",
-            "args": ["send", "testdata/sample.txt"],
+            "args": [
+                "send",
+                "testdata/sample.txt",
+                "--relay",
+                "ws://localhost:8080/ws"
+            ],
             "console": "integratedTerminal"
         },
         {
@@ -19,7 +24,12 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/cmd/p2pft",
-            "args": ["receive", "REPLACE-WITH-CODE"],
+            "args": [
+                "receive",
+                "REPLACE-WITH-CODE",
+                "--relay",
+                "ws://localhost:8080/ws"
+            ],
             "console": "integratedTerminal"
         },
         {
@@ -28,11 +38,21 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/cmd/p2pft-relay",
-            "args": [],
             "env": {
                 "RELAY_ADDR": ":8080"
             },
             "console": "integratedTerminal"
         }
-    ]
+    ],
+      "compounds": [
+        {
+            "name": "Relay + Send + Receive",
+            "configurations": [
+                "Relay",
+                "CLI: send",
+                "CLI: receive"
+            ],
+            "stopAll": true
+        }
+  ]
 }

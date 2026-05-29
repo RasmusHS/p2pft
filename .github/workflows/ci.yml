@@ -1,0 +1,29 @@
+name: CI
+ 
+on:
+  push:
+    branches: [main]
+  pull_request:
+ 
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+ 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+ 
+      - name: Build CLI
+        run: go build ./cmd/p2pft
+ 
+      - name: Build relay
+        run: go build ./cmd/p2pft-relay
+ 
+      - name: Vet
+        run: go vet ./...
+ 
+      - name: Test
+        run: go test ./...

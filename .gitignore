@@ -1,0 +1,10 @@
+bin/
+*.partial
+*.partial.meta
+*.test
+*.out
+coverage.*
+
+# OS / editor noise
+.DS_Store
+*.swp
