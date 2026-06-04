@@ -7,10 +7,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/RasmusHS/p2pft/internal/nat"
 	"github.com/RasmusHS/p2pft/internal/progress"
 	"github.com/RasmusHS/p2pft/internal/signaling"
 	"github.com/RasmusHS/p2pft/internal/tlsx"
@@ -22,26 +24,38 @@ const acceptTimeout = 30 * time.Second
 func runReceive(cmd *cobra.Command, args []string) error {
 	code := args[0]
 
-	// 1. Open the listener BEFORE talking to the relay so we already know
-	// our listen address when it's time to send PeerAddrs.
-	//
-	// Step 2: bind to 127.0.0.1 (same-host only). Step 4 will expand this
-	// to enumerate interfaces via internal/nat.
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	// 1. Listen on all interfaces. The OS picks the port unless --port is set.
+	listenAddr := net.JoinHostPort("0.0.0.0", strconv.Itoa(listenPort))
+	l, err := net.Listen("tcp", listenAddr)
 	if err != nil {
-		return fmt.Errorf("listen: %w", err)
+		return fmt.Errorf("listen on %s: %w", listenAddr, err)
 	}
 	defer l.Close()
-	localAddr := l.Addr().String()
 
-	// 2. Generate an ephemeral TLS cert. Sender will pin its fingerprint.
+	// Extract the actual bound port (matters if listenPort was 0).
+	_, portStr, _ := net.SplitHostPort(l.Addr().String())
+	boundPort, _ := strconv.Atoi(portStr)
+
+	// 2. Build our candidate list: loopback + LAN interfaces + any --advertise extras.
+	candidates := []string{net.JoinHostPort("127.0.0.1", portStr)}
+	lanAddrs, err := nat.DiscoverLocalAddrs(boundPort)
+	if err != nil {
+		// Non-fatal — same-host transfers still work via loopback.
+		fmt.Fprintf(os.Stderr, "warning: could not discover local addresses: %v\n", err)
+	}
+	candidates = append(candidates, lanAddrs...)
+	for _, a := range advertise {
+		candidates = append(candidates, a)
+	}
+
+	// 3. Generate TLS cert.
 	cert, err := tlsx.GenerateCert()
 	if err != nil {
 		return fmt.Errorf("generate tls cert: %w", err)
 	}
 	fingerprint := tlsx.FingerprintCert(cert)
 
-	// 3. Connect to relay.
+	// 4. Dial relay.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -51,14 +65,14 @@ func runReceive(cmd *cobra.Command, args []string) error {
 	}
 	defer client.Close()
 
-	// 4. Send ReceiverHello{code}.
+	// 5. Send ReceiverHello.
 	if err := client.Send(ctx, signaling.TypeReceiverHello, signaling.ReceiverHello{
 		Code: code,
 	}); err != nil {
 		return fmt.Errorf("send receiver_hello: %w", err)
 	}
 
-	// 5. Read SessionFound.
+	// 6. Read SessionFound.
 	found, err := readSessionFound(ctx, client)
 	if err != nil {
 		return err
@@ -67,16 +81,16 @@ func runReceive(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("sender did not provide a cert fingerprint; aborting")
 	}
 
-	// 6. Construct dest path. filepath.Base defends against a malicious
-	// sender sending "../../etc/passwd" as a filename.
+	// 7. Construct dest path. filepath.Base defends against malicious filenames.
 	filename := filepath.Base(found.Filename)
 	dest := filepath.Join(outputDir, filename)
 
-	// 7. Show details, prompt unless --yes.
+	// 8. Show details and prompt unless --yes.
 	fmt.Println()
 	fmt.Printf("  Incoming file: %s (%s)\n", filename, progress.FormatBytes(found.Size))
 	fmt.Printf("  From: %s\n", found.Peer.Public)
 	fmt.Printf("  Save to: %s\n", dest)
+	fmt.Printf("  Listening on: %v\n", candidates)
 	fmt.Println()
 
 	if !autoAccept {
@@ -85,9 +99,9 @@ func runReceive(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// 8. Send our PeerAddrs with the listen address and our cert fingerprint.
+	// 9. Send our PeerAddrs with the full candidate list.
 	if err := client.Send(ctx, signaling.TypePeerAddrs, signaling.PeerAddrs{
-		Local:           localAddr,
+		LocalCandidates: candidates,
 		CertFingerprint: fingerprint,
 	}); err != nil {
 		return fmt.Errorf("send peer_addrs: %w", err)
@@ -96,8 +110,8 @@ func runReceive(cmd *cobra.Command, args []string) error {
 	// Relay's work is done.
 	_ = client.Close()
 
-	// 9. Accept the incoming connection with a deadline.
-	fmt.Fprintf(os.Stderr, "Waiting for sender on %s...\n", localAddr)
+	// 10. Accept the incoming connection with a deadline.
+	fmt.Fprintln(os.Stderr, "Waiting for sender to connect...")
 	if tcpL, ok := l.(*net.TCPListener); ok {
 		_ = tcpL.SetDeadline(time.Now().Add(acceptTimeout))
 	}
@@ -105,16 +119,15 @@ func runReceive(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("accept: %w", err)
 	}
-	// Clear the deadline now that we have a conn.
 	if tcpL, ok := l.(*net.TCPListener); ok {
 		_ = tcpL.SetDeadline(time.Time{})
 	}
 
-	// 10. Wrap in TLS. The peer's fingerprint pins their cert.
+	// 11. TLS-wrap and handshake.
 	tlsConn := tls.Server(rawConn, tlsx.ServerConfig(cert, found.Peer.CertFingerprint))
-	defer tlsConn.Close() // closes rawConn too
+	defer tlsConn.Close()
 
-	fmt.Fprint(os.Stderr, "Connected. TLS handshake... ")
+	fmt.Fprintf(os.Stderr, "Connected from %s. TLS handshake... ", rawConn.RemoteAddr())
 	hsCtx, hsCancel := context.WithTimeout(ctx, tlsHandshakeTimeout)
 	if err := tlsConn.HandshakeContext(hsCtx); err != nil {
 		hsCancel()
@@ -123,7 +136,7 @@ func runReceive(cmd *cobra.Command, args []string) error {
 	hsCancel()
 	fmt.Fprintln(os.Stderr, "ok")
 
-	// 11. Run the transfer over the TLS conn.
+	// 12. Run the transfer.
 	bar := progress.New(found.Size)
 	bar.SetLabel("Receiving")
 

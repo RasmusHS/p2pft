@@ -18,9 +18,9 @@ type SenderHello struct {
 
 // Sent after sender discovers its own addresses.
 type PeerAddrs struct {
-	Local           string `json:"local"`            // LAN, e.g. "192.168.1.42:54321"
-	Public          string `json:"public"`           // public IP:port as seen by relay
-	CertFingerprint string `json:"cert_fingerprint"` // SHA-256 of self-signed TLS cert DER
+	LocalCandidates []string `json:"local_candidates"` // LAN, e.g. "192.168.1.42:54321"
+	Public          string   `json:"public"`           // public IP:port as seen by relay
+	CertFingerprint string   `json:"cert_fingerprint"` // SHA-256 of self-signed TLS cert DER
 }
 
 type SessionCreated struct {

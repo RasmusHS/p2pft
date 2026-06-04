@@ -91,7 +91,7 @@ func TestSignalingHandshake(t *testing.T) {
 
 		// 3. Send our PeerAddrs
 		if err := client.Send(ctx, signaling.TypePeerAddrs, signaling.PeerAddrs{
-			Local:           wantSenderLocal,
+			LocalCandidates: []string{wantSenderLocal},
 			CertFingerprint: wantSenderFP,
 		}); err != nil {
 			sendErr <- err
@@ -113,8 +113,8 @@ func TestSignalingHandshake(t *testing.T) {
 			sendErr <- err
 			return
 		}
-		if joined.Peer.Local != wantReceiverLocal {
-			sendErr <- &fieldErr{field: "joined.Peer.Local", want: wantReceiverLocal, got: joined.Peer.Local}
+		if len(joined.Peer.LocalCandidates) == 0 || joined.Peer.LocalCandidates[0] != wantReceiverLocal {
+			sendErr <- &fieldErr{field: "joined.Peer.LocalCandidates[0]", want: wantReceiverLocal, got: joined.Peer.LocalCandidates[0]}
 			return
 		}
 		if joined.Peer.CertFingerprint != wantReceiverFP {
@@ -186,8 +186,8 @@ func TestSignalingHandshake(t *testing.T) {
 			recvErr <- &fieldErr{field: "found.Sha256", want: wantHello.Sha256, got: found.Sha256}
 			return
 		}
-		if found.Peer.Local != wantSenderLocal {
-			recvErr <- &fieldErr{field: "found.Peer.Local", want: wantSenderLocal, got: found.Peer.Local}
+		if len(found.Peer.LocalCandidates) == 0 || found.Peer.LocalCandidates[0] != wantSenderLocal {
+			recvErr <- &fieldErr{field: "found.Peer.LocalCandidates[0]", want: wantSenderLocal, got: found.Peer.LocalCandidates[0]}
 			return
 		}
 		if found.Peer.CertFingerprint != wantSenderFP {
@@ -201,7 +201,7 @@ func TestSignalingHandshake(t *testing.T) {
 
 		// 3. Send our PeerAddrs
 		if err := client.Send(ctx, signaling.TypePeerAddrs, signaling.PeerAddrs{
-			Local:           wantReceiverLocal,
+			LocalCandidates: []string{wantReceiverLocal},
 			CertFingerprint: wantReceiverFP,
 		}); err != nil {
 			recvErr <- err
@@ -287,7 +287,7 @@ func TestBadFirstMessage(t *testing.T) {
 
 	// PeerAddrs is a real type but not valid as a first message.
 	if err := client.Send(ctx, signaling.TypePeerAddrs, signaling.PeerAddrs{
-		Local: "1.2.3.4:5",
+		LocalCandidates: []string{"1.2.3.4:5"},
 	}); err != nil {
 		t.Fatalf("send: %v", err)
 	}

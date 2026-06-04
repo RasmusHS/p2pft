@@ -4,13 +4,13 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/RasmusHS/p2pft/internal/nat"
 	"github.com/RasmusHS/p2pft/internal/progress"
 	"github.com/RasmusHS/p2pft/internal/signaling"
 	"github.com/RasmusHS/p2pft/internal/tlsx"
@@ -23,7 +23,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 	sourcePath := args[0]
 	filename := filepath.Base(sourcePath)
 
-	// 1. Stat the file. Reject directories — that's a step-6 stretch goal.
+	// 1. Stat the file.
 	info, err := os.Stat(sourcePath)
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", sourcePath, err)
@@ -33,8 +33,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 	}
 	size := info.Size()
 
-	// 2. Compute SHA-256 up front. Yes, second pass; needed for end-to-end
-	// integrity validation and reliable resume.
+	// 2. Hash.
 	fmt.Fprintf(os.Stderr, "Hashing %s (%s)... ", filename, progress.FormatBytes(size))
 	hash, err := transfer.FileSHA256(sourcePath)
 	if err != nil {
@@ -42,15 +41,14 @@ func runSend(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintln(os.Stderr, "done")
 
-	// 3. Generate an ephemeral TLS cert. The fingerprint goes into PeerAddrs;
-	// the peer will pin it during the TLS handshake.
+	// 3. Generate TLS cert.
 	cert, err := tlsx.GenerateCert()
 	if err != nil {
 		return fmt.Errorf("generate tls cert: %w", err)
 	}
 	fingerprint := tlsx.FingerprintCert(cert)
 
-	// 4. Connect to relay.
+	// 4. Dial relay.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -69,7 +67,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("send sender_hello: %w", err)
 	}
 
-	// 6. Receive SessionCreated.
+	// 6. Read SessionCreated.
 	created, err := readSessionCreated(ctx, client)
 	if err != nil {
 		return err
@@ -79,8 +77,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  (expires in %d minutes)\n", created.ExpiresIn/60)
 	fmt.Println()
 
-	// 7. Send our PeerAddrs. Sender doesn't listen in step 2, so Local is
-	// empty; Public is filled by the relay; CertFingerprint is ours.
+	// 7. Send our PeerAddrs. Sender doesn't listen, so LocalCandidates is empty.
 	if err := client.Send(ctx, signaling.TypePeerAddrs, signaling.PeerAddrs{
 		CertFingerprint: fingerprint,
 	}); err != nil {
@@ -96,24 +93,33 @@ func runSend(cmd *cobra.Command, args []string) error {
 	if joined.Peer.CertFingerprint == "" {
 		return fmt.Errorf("receiver did not provide a cert fingerprint; aborting")
 	}
-	fmt.Fprintf(os.Stderr, "Receiver connected from %s\n", joined.Peer.Public)
 
-	// Relay's job is done; close the WebSocket.
+	// Build candidate list: all of receiver's listen addresses, plus the
+	// relay-observed public (kept in case it happens to work for some NATs).
+	candidates := append([]string(nil), joined.Peer.LocalCandidates...)
+	if joined.Peer.Public != "" {
+		candidates = append(candidates, joined.Peer.Public)
+	}
+	if len(candidates) == 0 {
+		return fmt.Errorf("receiver advertised no candidate addresses")
+	}
+
+	fmt.Fprintf(os.Stderr, "Receiver connected from %s\n", joined.Peer.Public)
+	fmt.Fprintf(os.Stderr, "Racing %d candidate(s)... ", len(candidates))
+
+	// Relay's job is done.
 	_ = client.Close()
 
-	// 9. Dial the receiver's listen addr.
-	fmt.Fprintf(os.Stderr, "Dialing %s... ", joined.Peer.Local)
-	dialCtx, dialCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer dialCancel()
-	rawConn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", joined.Peer.Local)
+	// 9. Race-dial all candidates. First success wins.
+	rawConn, winner, err := nat.RaceConnect(ctx, candidates, time.Duration(connTimeout)*time.Second)
 	if err != nil {
-		return fmt.Errorf("dial receiver at %s: %w", joined.Peer.Local, err)
+		return fmt.Errorf("connect to peer: %w", err)
 	}
-	fmt.Fprintln(os.Stderr, "connected")
+	fmt.Fprintf(os.Stderr, "connected via %s\n", winner)
 
-	// 10. Wrap in TLS. The peer's fingerprint pins their cert.
+	// 10. TLS-wrap and handshake.
 	tlsConn := tls.Client(rawConn, tlsx.ClientConfig(cert, joined.Peer.CertFingerprint))
-	defer tlsConn.Close() // closes rawConn too
+	defer tlsConn.Close()
 
 	fmt.Fprint(os.Stderr, "TLS handshake... ")
 	hsCtx, hsCancel := context.WithTimeout(ctx, tlsHandshakeTimeout)
@@ -124,7 +130,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 	hsCancel()
 	fmt.Fprintln(os.Stderr, "ok")
 
-	// 11. Run the transfer over the TLS conn.
+	// 11. Run the transfer.
 	bar := progress.New(size)
 	bar.SetLabel("Sending")
 
