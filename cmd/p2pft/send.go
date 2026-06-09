@@ -117,6 +117,16 @@ func runSend(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "connected via %s\n", winner)
 
+	// 9b. Write the session code as a preamble so the receiver can identify
+	// THIS connection (vs. losers from the multi-candidate race that the
+	// accept queue might surface first). Plaintext is fine — the code is
+	// already exchanged in the clear via the relay, and TLS protects all
+	// later bytes.
+	if err := writePreamble(rawConn, created.Code); err != nil {
+		rawConn.Close()
+		return fmt.Errorf("write preamble: %w", err)
+	}
+
 	// 10. TLS-wrap and handshake.
 	tlsConn := tls.Client(rawConn, tlsx.ClientConfig(cert, joined.Peer.CertFingerprint))
 	defer tlsConn.Close()

@@ -85,6 +85,15 @@ func runReceive(cmd *cobra.Command, args []string) error {
 	filename := filepath.Base(found.Filename)
 	dest := filepath.Join(outputDir, filename)
 
+	// Make sure the output directory exists before showing the prompt.
+	// Without this, a non-existent --output path would fail mid-transfer
+	// when the receiver tries to create the .partial file, after the user
+	// has already accepted and bytes have started flowing. Better to fail
+	// here before anything happens.
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return fmt.Errorf("create output directory %s: %w", outputDir, err)
+	}
+
 	// 8. Show details and prompt unless --yes.
 	fmt.Println()
 	fmt.Printf("  Incoming file: %s (%s)\n", filename, progress.FormatBytes(found.Size))
@@ -110,12 +119,16 @@ func runReceive(cmd *cobra.Command, args []string) error {
 	// Relay's work is done.
 	_ = client.Close()
 
-	// 10. Accept the incoming connection with a deadline.
+	// 10. Accept the incoming connection. The accept loop reads each
+	// connection's preamble and skips any that don't match our session
+	// code — these are "losers" from the sender's RaceConnect that the
+	// accept queue surfaced first. The listener-level deadline bounds the
+	// total operation across all Accept attempts.
 	fmt.Fprintln(os.Stderr, "Waiting for sender to connect...")
 	if tcpL, ok := l.(*net.TCPListener); ok {
 		_ = tcpL.SetDeadline(time.Now().Add(acceptTimeout))
 	}
-	rawConn, err := l.Accept()
+	rawConn, err := acceptWithCode(l, code)
 	if err != nil {
 		return fmt.Errorf("accept: %w", err)
 	}
